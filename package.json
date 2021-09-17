@@ -26,8 +26,11 @@
     "ts-node": "^10.2.1",
     "typescript": "^4.4.3"
   },
-  "scripts": {},
+  "scripts": {
+    "start:remix": "remixd -s . --remix-ide https://remix.ethereum.org"
+  },
   "dependencies": {
-    "@openzeppelin/contracts": "^4.3.2"
+    "@openzeppelin/contracts": "^4.3.2",
+    "@remix-project/remixd": "^0.5.2"
   }
 }
