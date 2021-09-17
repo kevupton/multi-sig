@@ -738,7 +738,7 @@ library Strings {
 
 interface IRequestApproval {
 
-    event RequestCreated(bytes32 indexed requestId, string details, bytes callback, address indexed sender);
+    event RequestCreated(bytes32 indexed requestId, string details, bytes4 signature, bytes args, address indexed sender);
     event RequestCompleted(bytes32 indexed requestId);
     event RequestApproved(bytes32 indexed requestId, address indexed account, address indexed sender);
     event RequestRejected(bytes32 indexed requestId, address indexed account, address indexed sender);
@@ -746,27 +746,16 @@ interface IRequestApproval {
     struct Request {
         bool created;
         bool completed;
+        bytes4 signature;
         uint256 totalApprovers;
-        bytes callback;
+        bytes args;
         string details;
         address[] approvers;
     }
 
     function totalRequests() external view returns (uint256);
-
-    // function _createRequest(bytes memory callback, string memory details) internal returns (bytes32);
-
-    // function _approve(bytes32 requestId, address approver) internal;
-
-    // function _reject(bytes32 requestId, address rejector) internal;
-
-    // function _requiredApprovals() internal returns (uint8);
-
-    // function _isValidApprover(address account) internal returns (bool);
 }
 
-
-// string(abi.encodePacked(
 
 abstract contract RequestApproval is IRequestApproval {
     using SafeMath for uint256;
@@ -779,8 +768,10 @@ abstract contract RequestApproval is IRequestApproval {
     function _requiredApprovals() internal virtual view returns (uint256);
 
     function _isValidApprover(address account) internal virtual view returns (bool);
+    
+    function _callback(bytes4 signature, bytes memory args) internal virtual;
 
-    function _createRequest(bytes memory callback, string memory details) internal returns (bytes32) {
+    function _createRequest(bytes4 signature, bytes memory args, string memory details) internal returns (bytes32) {
         bytes32 requestId = keccak256(abi.encodePacked(msg.sender, block.timestamp, details, totalRequests));
 
         Request storage req = request[requestId];
@@ -789,9 +780,10 @@ abstract contract RequestApproval is IRequestApproval {
 
         req.created = true;
         req.details = details;
-        req.callback = callback;
+        req.args = args;
+        req.signature = signature;
 
-        emit RequestCreated(requestId, details, callback, msg.sender);
+        emit RequestCreated(requestId, details, signature, args, msg.sender);
 
         return requestId;
     }
@@ -821,7 +813,7 @@ abstract contract RequestApproval is IRequestApproval {
         }
 
         if (req.totalApprovers >= _requiredApprovals()) {
-            _safeCall(req.callback);
+            _callback(req.signature, req.args);
             req.completed = true;
             emit RequestCompleted(requestId);
         }
@@ -840,6 +832,10 @@ abstract contract RequestApproval is IRequestApproval {
         emit RequestRejected(requestId, account, msg.sender);
     }
 
+    function _signature(string memory key) internal pure returns (bytes4) {
+        return bytes4(keccak256(bytes(key)));
+    }
+
     function _removeAccountFromArray(address[] memory accounts, address account) private pure returns (address[] memory) {
         address[] memory newAccounts = new address[](accounts.length - 1);
 
@@ -852,22 +848,6 @@ abstract contract RequestApproval is IRequestApproval {
         }
 
         return newAccounts;
-    }
-
-    function _safeCall(bytes memory callback) private {
-        (bool success, bytes memory data) = address(this).call(callback);
-        require(success && (data.length == 0 || abi.decode(data, (bool))), _getRevertMsg(data));
-    }
-
-    function _getRevertMsg(bytes memory _returnData) private pure returns (string memory) {
-        // If the _res length is less than 68, then the transaction failed silently (without a revert message)
-        if (_returnData.length < 68) return 'RequestApproval: safe call failed';
-
-        assembly {
-        // Slice the sighash.
-            _returnData := add(_returnData, 0x04)
-        }
-        return abi.decode(_returnData, (string)); // All that remains is the revert string
     }
 }
 
@@ -890,8 +870,11 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
     using SafeMath for uint256;
 
     uint256 public override totalAdmins = 0;
+    
+    bytes4 private immutable ADD_ADMIN = _signature('_addAdmin(address)');
+    bytes4 private immutable REVOKE_ADMIN = _signature('_revokeAdmin(address)');
 
-    mapping(address => bool) admin;
+    mapping(address => bool) public admin;
 
     modifier onlyAdmin {
         require(admin[msg.sender], 'AdminControl: this account is not an admin');
@@ -906,7 +889,8 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
 
     function addAdmin(address account) external onlyAdmin override returns (bytes32 requestId) {
         requestId = _createRequest(
-            abi.encodeWithSignature('_addAdmin(address)', account),
+            ADD_ADMIN,
+            abi.encode(account),
             string(abi.encodePacked(
                 "Request to add admin account ",
                 Strings.toHexString(uint160(account), 20)
@@ -918,7 +902,8 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
 
     function revokeAdmin(address account) external onlyAdmin override returns (bytes32 requestId) {
         requestId = _createRequest(
-            abi.encodeWithSignature('_revokeAdmin(address)', account),
+            REVOKE_ADMIN,
+            abi.encode(account),
             string(abi.encodePacked(
                 "Request to revoke admin account ",
                 Strings.toHexString(uint160(account), 20)
@@ -949,6 +934,19 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
     function _isValidApprover(address account) internal view override returns (bool) {
         return admin[account];
     }
+    
+    function _callback(bytes4 signature, bytes memory args) internal virtual override {
+        address account;
+        
+        if (signature == ADD_ADMIN) {
+            (account) = abi.decode(args, (address));
+            _addAdmin(account);
+        }
+        else if (signature == REVOKE_ADMIN) {
+            (account) = abi.decode(args, (address));
+            _revokeAdmin(account);
+        }
+    }
 }
 
 interface IMultiSigWallet {
@@ -957,6 +955,7 @@ interface IMultiSigWallet {
     event TransferRequested(bytes32 indexed requestId, address to, uint256 amount, address indexed sender);
     event FunctionCallRequested(bytes32 indexed requestId, address target, bytes data, address indexed sender);
     event Transfer(address to, uint256 amount, address tokenAddress);
+    event FundsReceived(uint256 amount, address sender);
     event FunctionCall(address target, bytes data);
 
     function approve(bytes32 requestId) external;
@@ -965,13 +964,30 @@ interface IMultiSigWallet {
     function transferToken(address to, uint256 amount, address tokenAddress) external returns (bytes32 requestId);
     function transfer(address to, uint256 amount) external returns (bytes32 requestId);
     function functionCall(address target, bytes memory data) external returns (bytes32 requestId);
+    function balance() external view returns (uint256);
+    function tokenBalance(address tokenAddress) external view returns (uint256);
 }
 
 contract MultiSigWallet is IMultiSigWallet, AdminControl {
     using SafeERC20 for IERC20;
     using Address for address;
+    
+    bytes4 private immutable TRANSFER = _signature('_transfer(address,uint256,address)');
+    bytes4 private immutable FUNCTION_CALL = _signature('_functionCall(address,bytes)');
 
     constructor(address[] memory initialAdminAccounts) AdminControl(initialAdminAccounts) {
+    }
+    
+    receive() external payable {
+        emit FundsReceived(msg.value, msg.sender);
+    }
+    
+    function balance() external view override returns (uint256) {
+        return address(this).balance;
+    }
+    
+    function tokenBalance(address tokenAddress) external view override returns (uint256) {
+        return IERC20(tokenAddress).balanceOf(tokenAddress);
     }
 
     function approve(bytes32 requestId) external override onlyAdmin {
@@ -985,9 +1001,13 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
     function transferToken(address to, uint256 amount, address tokenAddress) external onlyAdmin override returns (bytes32 requestId) {
         require(amount > 0, 'MultiSigWallet: please transfer more than 0 amount');
         require(tokenAddress != address(0), 'MultiSigWallet: tokenAddress is zero');
+        
+        IERC20 token = IERC20(tokenAddress);
+        require(token.balanceOf(address(this)) >= amount, "MultiSigWallet: this wallet does not have enough funds.");
 
         requestId = _createRequest(
-            abi.encodeWithSignature('_transfer(address,uint256,address)', to, amount, tokenAddress),
+            TRANSFER,
+            abi.encode(to, amount, tokenAddress),
             string(abi.encodePacked(
                 "Transfer ",
                 Strings.toString(amount),
@@ -1003,9 +1023,11 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
 
     function transfer(address to, uint256 amount) external onlyAdmin override returns (bytes32 requestId) {
         require(amount > 0, 'MultiSigWallet: please transfer more than 0 amount');
+        require(address(this).balance >= amount, "MultiSigWallet: this wallet does not have enough funds.");
 
         requestId = _createRequest(
-            abi.encodeWithSignature('_transfer(address,uint256,address)', to, amount, address(0)),
+            TRANSFER,
+            abi.encode(to, amount, address(0)),
             string(abi.encodePacked(
                 "Transfer ",
                 Strings.toString(amount),
@@ -1021,7 +1043,8 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
         require(target != address(0), 'MultiSigWallet: cannot call 0 address');
 
         requestId = _createRequest(
-            abi.encodeWithSignature('_functionCall(address,bytes)', target, data),
+            FUNCTION_CALL,
+            abi.encode(target, data),
             string(abi.encodePacked(
                 "External call to external function ",
                 Strings.toHexString(uint160(target), 20)
@@ -1046,5 +1069,22 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
         target.functionCall(data);
 
         emit FunctionCall(target, data);
+    }
+    
+    function _callback(bytes4 signature, bytes memory args) internal override {
+        if (signature == TRANSFER) {
+            address to;
+            uint256 amount;
+            address tokenAddress;
+            (to, amount, tokenAddress) = abi.decode(args, (address, uint256, address));
+            _transfer(to, amount, tokenAddress);
+        } else if (signature == FUNCTION_CALL) {
+            address target;
+            bytes memory targetArgs;
+            (target, targetArgs) = abi.decode(args, (address, bytes));
+            _functionCall(target, targetArgs);
+        } else {
+            super._callback(signature, args);
+        }
     }
 }
