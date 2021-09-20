@@ -49,7 +49,7 @@ describe('MultiSigWallet', () => {
 
       const amount = ethers.utils.parseEther('0.5');
 
-      await multiSigWallet['transfer'](to.address, amount);
+      await multiSigWallet['transfer'](to.address, amount, 'test');
 
       const requestId = await multiSigWallet['lastRequestId']();
 
@@ -72,11 +72,11 @@ describe('MultiSigWallet', () => {
 
     it('should fail if they do not have enough funds', async () => {
       const amount = ethers.utils.parseEther('1.5');
-      await multiSigWallet['transfer'](to.address, amount).should.eventually.be.rejected;
+      await multiSigWallet['transfer'](to.address, amount, 'test').should.eventually.be.rejected;
     });
 
     it('should not be able to make the request if they are not an admin', async () => {
-      await multiSigWallet.connect(to)['transfer'](to, ethers.utils.parseEther('1')).should.eventually.be.rejected;
+      await multiSigWallet.connect(to)['transfer'](to, ethers.utils.parseEther('1'), 'test').should.eventually.be.rejected;
     });
   });
 
@@ -90,7 +90,7 @@ describe('MultiSigWallet', () => {
     });
 
     it('should fail if there is not enough tokens', async () => {
-      await multiSigWallet['transferToken'](multiSigWallet.address, ethers.utils.parseEther('1.5'), dummyToken.address).should.eventually.be.rejected;
+      await multiSigWallet['transferToken'](multiSigWallet.address, ethers.utils.parseEther('1.5'), dummyToken.address, 'test').should.eventually.be.rejected;
     });
 
     it('should be able to successfully transfer a token', async () => {
@@ -99,7 +99,7 @@ describe('MultiSigWallet', () => {
 
       const amount = ethers.utils.parseEther('0.5');
 
-      await multiSigWallet['transferToken'](to.address, amount, dummyToken.address);
+      await multiSigWallet['transferToken'](to.address, amount, dummyToken.address, 'test');
 
       const requestId = await multiSigWallet['lastRequestId']();
 
@@ -121,7 +121,7 @@ describe('MultiSigWallet', () => {
     });
 
     it('should not be callable if they are not an admin', async () => {
-      await multiSigWallet.connect(to)['transferToken'](to.address, amount, dummyToken.address).should.eventually.be.rejected;
+      await multiSigWallet.connect(to)['transferToken'](to.address, amount, dummyToken.address, 'test').should.eventually.be.rejected;
     });
   });
 
@@ -136,7 +136,7 @@ describe('MultiSigWallet', () => {
     it('should fail if the call fails', async () => {
       const encoding: string = dummyToken.interface.encodeFunctionData('transfer', [to.address, ethers.utils.parseEther('1.5')]);
 
-      await multiSigWallet['functionCall'](dummyToken.address, encoding);
+      await multiSigWallet['functionCall'](dummyToken.address, encoding, 'test');
 
       const requestId = multiSigWallet['lastRequestId']();
 
@@ -147,7 +147,7 @@ describe('MultiSigWallet', () => {
     it('should be able to successfully call another contract', async () => {
       const encoding: string = dummyToken.interface.encodeFunctionData('transfer', [to.address, ethers.utils.parseEther('0.5')]);
 
-      await multiSigWallet['functionCall'](dummyToken.address, encoding);
+      await multiSigWallet['functionCall'](dummyToken.address, encoding, 'test');
 
       const requestId = multiSigWallet['lastRequestId']();
 
@@ -159,7 +159,7 @@ describe('MultiSigWallet', () => {
 
     it('should not be able to make the request if they are not an admin', async () => {
       const encoding: string = dummyToken.interface.encodeFunctionData('transfer', [to.address, ethers.utils.parseEther('0.5')]);
-      await multiSigWallet.connect(to)['functionCall'](dummyToken.address, encoding).should.eventually.be.rejected;
+      await multiSigWallet.connect(to)['functionCall'](dummyToken.address, encoding, 'test').should.eventually.be.rejected;
     });
   });
 

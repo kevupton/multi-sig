@@ -944,19 +944,19 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
 
 interface IMultiSigWallet {
 
-    event TokenTransferRequested(bytes32 indexed requestId, address to, uint256 amount, address tokenAddress, address indexed sender);
-    event TransferRequested(bytes32 indexed requestId, address to, uint256 amount, address indexed sender);
-    event FunctionCallRequested(bytes32 indexed requestId, address target, bytes data, address indexed sender);
-    event Transfer(address to, uint256 amount, address tokenAddress);
+    event TokenTransferRequested(bytes32 indexed requestId, address to, uint256 amount, address tokenAddress, string reason, address indexed sender);
+    event TransferRequested(bytes32 indexed requestId, address to, uint256 amount, string reason, address indexed sender);
+    event FunctionCallRequested(bytes32 indexed requestId, address target, bytes data, string reason, address indexed sender);
+    event Transfer(address to, uint256 amount, address tokenAddress, string reason);
+    event FunctionCall(address target, bytes data, string reason);
     event FundsReceived(uint256 amount, address sender);
-    event FunctionCall(address target, bytes data);
 
     function approve(bytes32 requestId) external;
     function reject(bytes32 requestId) external;
 
-    function transferToken(address to, uint256 amount, address tokenAddress) external returns (bytes32 requestId);
-    function transfer(address to, uint256 amount) external returns (bytes32 requestId);
-    function functionCall(address target, bytes memory data) external returns (bytes32 requestId);
+    function transferToken(address to, uint256 amount, address tokenAddress, string memory reason) external returns (bytes32 requestId);
+    function transfer(address to, uint256 amount, string memory reason) external returns (bytes32 requestId);
+    function functionCall(address target, bytes memory data, string memory reason) external returns (bytes32 requestId);
     function balance() external view returns (uint256);
     function tokenBalance(address tokenAddress) external view returns (uint256);
 }
@@ -991,7 +991,7 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
         _reject(requestId, msg.sender);
     }
 
-    function transferToken(address to, uint256 amount, address tokenAddress) external onlyAdmin override returns (bytes32 requestId) {
+    function transferToken(address to, uint256 amount, address tokenAddress, string memory reason) external onlyAdmin override returns (bytes32 requestId) {
         require(amount > 0, 'MultiSigWallet: please transfer more than 0 amount');
         require(tokenAddress != address(0), 'MultiSigWallet: tokenAddress is zero');
         
@@ -1000,55 +1000,61 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
 
         requestId = _createRequest(
             TRANSFER,
-            abi.encode(to, amount, tokenAddress),
+            abi.encode(to, amount, tokenAddress, reason),
             string(abi.encodePacked(
                 "Transfer ",
                 Strings.toString(amount),
                 " Tokens (",
                 Strings.toHexString(uint160(tokenAddress), 20),
                 ") to ",
-                Strings.toHexString(uint160(to), 20)
+                Strings.toHexString(uint160(to), 20),
+                " for ",
+                reason
             ))
         );
 
-        emit TokenTransferRequested(requestId, to, amount, tokenAddress, msg.sender);
+        emit TokenTransferRequested(requestId, to, amount, tokenAddress, reason, msg.sender);
     }
 
-    function transfer(address to, uint256 amount) external onlyAdmin override returns (bytes32 requestId) {
+    function transfer(address to, uint256 amount, string memory reason) external onlyAdmin override returns (bytes32 requestId) {
         require(amount > 0, 'MultiSigWallet: please transfer more than 0 amount');
         require(address(this).balance >= amount, "MultiSigWallet: this wallet does not have enough funds.");
 
         requestId = _createRequest(
             TRANSFER,
-            abi.encode(to, amount, address(0)),
+            abi.encode(to, amount, address(0), reason),
             string(abi.encodePacked(
                 "Transfer ",
                 Strings.toString(amount),
                 " ETH to ",
-                Strings.toHexString(uint160(to), 20)
+                Strings.toHexString(uint160(to), 20),
+                " for: ",
+                reason
             ))
         );
 
-        emit TransferRequested(requestId, to, amount, msg.sender);
+        emit TransferRequested(requestId, to, amount, reason, msg.sender);
     }
 
-    function functionCall(address target, bytes memory data) external override onlyAdmin returns (bytes32 requestId) {
+    function functionCall(address target, bytes memory data, string memory reason) external override onlyAdmin returns (bytes32 requestId) {
         require(target != address(0), 'MultiSigWallet: cannot call 0 address');
         require(target != address(this), 'MultiSigWallet: cannot call self');
 
         requestId = _createRequest(
             FUNCTION_CALL,
-            abi.encode(target, data),
+            abi.encode(target, data, reason),
             string(abi.encodePacked(
                 "External call to external function ",
-                Strings.toHexString(uint160(target), 20)
+                Strings.toHexString(uint160(target), 20),
+                " for ",
+                reason
             ))
         );
 
-        emit FunctionCallRequested(requestId, target, data, msg.sender);
+        emit FunctionCallRequested(requestId, target, data, reason, msg.sender);
     }
 
-    function _transfer(address to, uint256 amount, address tokenAddress) private {
+    function _transfer(address to, uint256 amount, address tokenAddress, string memory reason) private {
         if (tokenAddress == address(0)) {
             payable(to).transfer(amount);
         } else {
@@ -1056,27 +1062,29 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
             token.safeTransfer(to, amount);
         }
 
-        emit Transfer(to, amount, tokenAddress);
+        emit Transfer(to, amount, tokenAddress, reason);
     }
 
-    function _functionCall(address target, bytes memory data) private {
+    function _functionCall(address target, bytes memory data, string memory reason) private {
         target.functionCall(data);
 
-        emit FunctionCall(target, data);
+        emit FunctionCall(target, data, reason);
     }
     
     function _callback(bytes4 signature, bytes memory args) internal override {
+        string memory reason;
+
         if (signature == TRANSFER) {
             address to;
             uint256 amount;
             address tokenAddress;
-            (to, amount, tokenAddress) = abi.decode(args, (address, uint256, address));
-            _transfer(to, amount, tokenAddress);
+            (to, amount, tokenAddress, reason) = abi.decode(args, (address, uint256, address, string));
+            _transfer(to, amount, tokenAddress, reason);
         } else if (signature == FUNCTION_CALL) {
             address target;
             bytes memory targetArgs;
-            (target, targetArgs) = abi.decode(args, (address, bytes));
-            _functionCall(target, targetArgs);
+            (target, targetArgs, reason) = abi.decode(args, (address, bytes, string));
+            _functionCall(target, targetArgs, reason);
         } else {
             super._callback(signature, args);
         }
