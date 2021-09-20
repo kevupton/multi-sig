@@ -995,6 +995,11 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
             (account) = abi.decode(args, (address));
             _revokeAdmin(account);
         }
+        else if (signature == SET_APPROVALS) {
+            uint256 newApprovals;
+            (newApprovals) = abi.decode(args, (uint256));
+            _setApprovals(newApprovals);
+        }
     }
 }
 
@@ -1036,7 +1041,7 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
     }
     
     function tokenBalance(address tokenAddress) external view override returns (uint256) {
-        return IERC20(tokenAddress).balanceOf(tokenAddress);
+        return IERC20(tokenAddress).balanceOf(address(this));
     }
 
     function approve(bytes32 requestId) external override onlyAdmin {
@@ -1088,7 +1093,7 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
         emit TransferRequested(requestId, to, amount, msg.sender);
     }
 
-    function functionCall(address target, bytes memory data) external override returns (bytes32 requestId) {
+    function functionCall(address target, bytes memory data) external override onlyAdmin returns (bytes32 requestId) {
         require(target != address(0), 'MultiSigWallet: cannot call 0 address');
         require(target != address(this), 'MultiSigWallet: cannot call self');
 
