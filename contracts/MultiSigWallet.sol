@@ -754,25 +754,34 @@ interface IRequestApproval {
     }
 
     function totalRequests() external view returns (uint256);
+    function lastRequestId() external view returns (bytes32);
+    function lastRequest() external view returns (Request memory);
+    function requiredApprovals() external view returns (uint256);
+    function isValidApprover(address account) external view returns (bool);
 }
 
 
 abstract contract RequestApproval is IRequestApproval {
     using SafeMath for uint256;
 
-    uint256 public override totalRequests = 0;
+    uint256 public override totalRequests;
+    bytes32 public override lastRequestId;
 
     mapping(bytes32 => Request) public request;
     mapping(bytes32 => mapping(address => bool)) public approved;
-    
-    function _requiredApprovals() internal virtual view returns (uint256);
 
-    function _isValidApprover(address account) internal virtual view returns (bool);
-    
+    function lastRequest() external view override returns (Request memory) {
+        return request[lastRequestId];
+    }
+
+    function requiredApprovals() public view override virtual returns (uint256);
+
+    function isValidApprover(address account) public view override virtual returns (bool);
+
     function _callback(bytes4 signature, bytes memory args) internal virtual;
 
     function _createRequest(bytes4 signature, bytes memory args, string memory details) internal returns (bytes32) {
-        bytes32 requestId = keccak256(abi.encodePacked(msg.sender, block.timestamp, details, totalRequests));
+        bytes32 requestId = keccak256(abi.encodePacked(msg.sender, block.timestamp, details, totalRequests++));
 
         Request storage req = request[requestId];
 
@@ -783,6 +792,8 @@ abstract contract RequestApproval is IRequestApproval {
         req.args = args;
         req.signature = signature;
 
+        lastRequestId = requestId;
+
         emit RequestCreated(requestId, details, signature, args, msg.sender);
 
         return requestId;
@@ -791,7 +802,7 @@ abstract contract RequestApproval is IRequestApproval {
     function _approve(bytes32 requestId, address account) internal {
         require(request[requestId].created, 'RequestApproval: this requestId has not been created');
         require(!request[requestId].completed, 'RequestApproval: this requestId has already been completed');
-        require(_isValidApprover(account), 'RequestApproval: this account is not a valid account.');
+        require(isValidApprover(account), 'RequestApproval: this account is not a valid account.');
 
         Request storage req = request[requestId];
 
@@ -805,14 +816,14 @@ abstract contract RequestApproval is IRequestApproval {
 
         uint i = 0;
         while (i < req.approvers.length) {
-            if (!_isValidApprover(req.approvers[i])) {
+            if (!isValidApprover(req.approvers[i])) {
                 _reject(requestId, req.approvers[i]);
             } else {
                 i++;
             }
         }
 
-        if (req.totalApprovers >= _requiredApprovals()) {
+        if (req.totalApprovers >= requiredApprovals()) {
             _callback(req.signature, req.args);
             req.completed = true;
             emit RequestCompleted(requestId);
@@ -822,7 +833,6 @@ abstract contract RequestApproval is IRequestApproval {
     function _reject(bytes32 requestId, address account) internal {
         require(request[requestId].created, 'RequestApproval: this requestId has not been created');
         require(!request[requestId].completed, 'RequestApproval: this requestId has already been completed');
-        require(_isValidApprover(account), 'RequestApproval: this account is not a valid account.');
         require(approved[requestId][account], 'RequestApproval: the account has not approved this requestId');
 
         approved[requestId][account] = false;
@@ -855,39 +865,49 @@ interface IAdminControl {
 
     event AddAdminRequested(bytes32 indexed requestId, address indexed account, address indexed sender);
     event RevokeAdminRequested(bytes32 indexed requestId, address indexed account, address indexed sender);
+    event UpdateRequestApprovalsRequested(bytes32 indexed requestId, uint256 amount, address indexed sender);
 
     event AdminAdded(address indexed account);
     event AdminRevoked(address indexed account);
+    event RequiredApprovalsUpdated(uint256 prevAmount, uint256 newAmount);
 
     function totalAdmins() external view returns (uint256);
 
     function addAdmin(address account) external returns (bytes32 requestId);
 
     function revokeAdmin(address account) external returns (bytes32 requestId);
+
+    function updateRequiredApprovals(uint256 newRequiredApprovals) external returns (bytes32 requestId);
 }
 
 abstract contract AdminControl is IAdminControl, RequestApproval {
     using SafeMath for uint256;
 
-    uint256 public override totalAdmins = 0;
+    uint256 public override totalAdmins;
+    uint256 private _requiredApprovals;
     
     bytes4 private immutable ADD_ADMIN = _signature('_addAdmin(address)');
     bytes4 private immutable REVOKE_ADMIN = _signature('_revokeAdmin(address)');
+    bytes4 private immutable SET_APPROVALS = _signature('_setApprovals(uint256)');
 
     mapping(address => bool) public admin;
+
+    constructor(address[] memory initialAdminAccounts, uint256 _minApprovals) {
+        for (uint i = 0; i < initialAdminAccounts.length; i++) {
+            _addAdmin(initialAdminAccounts[i]);
+        }
+
+        _requiredApprovals = _minApprovals;
+    }
 
     modifier onlyAdmin {
         require(admin[msg.sender], 'AdminControl: this account is not an admin');
         _;
     }
 
-    constructor(address[] memory initialAdminAccounts) {
-        for (uint i = 0; i < initialAdminAccounts.length; i++) {
-            _addAdmin(initialAdminAccounts[i]);
-        }
-    }
-
     function addAdmin(address account) external onlyAdmin override returns (bytes32 requestId) {
+        require(!admin[account], "This account is already an admin");
+
         requestId = _createRequest(
             ADD_ADMIN,
             abi.encode(account),
@@ -901,6 +921,8 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
     }
 
     function revokeAdmin(address account) external onlyAdmin override returns (bytes32 requestId) {
+        require(admin[account], "This account is not an admin");
+
         requestId = _createRequest(
             REVOKE_ADMIN,
             abi.encode(account),
@@ -913,7 +935,34 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
         emit RevokeAdminRequested(requestId, account, msg.sender);
     }
 
+    function updateRequiredApprovals(uint256 newRequiredAmount) external onlyAdmin override returns (bytes32 requestId) {
+        require(newRequiredAmount <= totalAdmins, "New approval amount must be less than the total admins");
+
+        requestId = _createRequest(
+            SET_APPROVALS,
+            abi.encode(newRequiredAmount),
+            string(abi.encodePacked(
+                "Request to change the requiredApprovals from ",
+                Strings.toString(requiredApprovals()),
+                " to ",
+                Strings.toString(newRequiredAmount)
+            ))
+        );
+
+        emit UpdateRequestApprovalsRequested(requestId, newRequiredAmount, msg.sender);
+    }
+
+    function requiredApprovals() public view override returns (uint256) {
+        return _requiredApprovals < totalAdmins ? _requiredApprovals : totalAdmins;
+    }
+
+    function isValidApprover(address account) public view override returns (bool) {
+        return admin[account];
+    }
+
     function _addAdmin(address account) private {
+        require(!admin[account], "This account is already an admin");
+
         admin[account] = true;
         totalAdmins = totalAdmins.add(1);
 
@@ -921,18 +970,18 @@ abstract contract AdminControl is IAdminControl, RequestApproval {
     }
 
     function _revokeAdmin(address account) private {
+        require(admin[account], "This account is not an admin");
+
         admin[account] = false;
         totalAdmins = totalAdmins.sub(1);
 
         emit AdminRevoked(account);
     }
 
-    function _requiredApprovals() internal view override returns (uint256) {
-        return totalAdmins;
-    }
-
-    function _isValidApprover(address account) internal view override returns (bool) {
-        return admin[account];
+    function _setApprovals(uint256 amount) private {
+        uint256 prevAmount = requiredApprovals();
+        _requiredApprovals = amount;
+        emit RequiredApprovalsUpdated(prevAmount, amount);
     }
     
     function _callback(bytes4 signature, bytes memory args) internal virtual override {
@@ -975,7 +1024,7 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
     bytes4 private immutable TRANSFER = _signature('_transfer(address,uint256,address)');
     bytes4 private immutable FUNCTION_CALL = _signature('_functionCall(address,bytes)');
 
-    constructor(address[] memory initialAdminAccounts) AdminControl(initialAdminAccounts) {
+    constructor(address[] memory initialAdminAccounts, uint256 minApprovers) AdminControl(initialAdminAccounts, minApprovers) {
     }
     
     receive() external payable {
@@ -1041,6 +1090,7 @@ contract MultiSigWallet is IMultiSigWallet, AdminControl {
 
     function functionCall(address target, bytes memory data) external override returns (bytes32 requestId) {
         require(target != address(0), 'MultiSigWallet: cannot call 0 address');
+        require(target != address(this), 'MultiSigWallet: cannot call self');
 
         requestId = _createRequest(
             FUNCTION_CALL,
